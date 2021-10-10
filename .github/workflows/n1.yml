@@ -1,0 +1,157 @@
+name: Auto-Build-N1
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+  schedule:
+    - cron: 0 21 * * 5
+env:
+  rc_rclone: ${{secrets.RCONFIG}}
+  pack: ${{secrets.PACKAGE}}
+  URL: https://github.com/coolsnowwolf/lede
+  BRANCH: master
+  NAME: n1
+  CONFIG: n1.config
+  DIY_SH: ${{secrets.DIY_SH}}
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: 检查运行环境
+      uses: actions/checkout@master
+
+    - name: 准备编译环境中，请稍后......
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        docker rmi `docker images -q`
+        echo "Deleting files, please wait ..."
+        sudo rm -rf \
+          /usr/share/dotnet \
+          /etc/mysql \
+          /etc/php
+        sudo -E apt-get -y purge \
+          azure-cli \
+          ghc* \
+          zulu* \
+          hhvm \
+          llvm* \
+          firefox \
+          google* \
+          dotnet* \
+          powershell \
+          openjdk* \
+          mysql* \
+          php*
+        sudo -E apt-get update
+        sudo -E apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git \
+        libncurses5-dev patch python3 python2.7 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion \
+        flex node-uglify git gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils \
+        upx-ucl libelf-dev autoconf automake libtool autopoint device-tree-compiler g++-multilib antlr3 gperf wget curl \
+        swig rsync
+        sudo -E apt-get -y autoremove --purge
+        sudo -E apt-get clean
+        sudo timedatectl set-timezone "$TZ"
+
+    - name: 配置安装挂载rclone
+      run: |
+        sudo curl https://rclone.org/install.sh | sudo bash
+        sudo mkdir -p /home/runner/.config/rclone
+        sudo cat > rclone.conf << EOF
+          ${rc_rclone}
+        EOF
+        sudo mkdir -p /mnt/gdrive
+        sudo cp rclone.conf /home/runner/.config/rclone/  
+        sudo rm -rf ~/work/Auto-Build-Openwrt/Auto-Build-Openwrt/rclone.conf
+        sudo rclone mount gd: /mnt/gdrive --copy-links --allow-other --allow-non-empty --umask 000 --daemon &
+        
+    - name: 正在从源码仓库下载源码中......
+      run: git clone --depth 1 $URL -b $BRANCH $NAME
+      
+    - name: 正在从源码仓库下载插件源码中......
+      run: | 
+        cat > package.sh << EOF
+        ${pack}
+        EOF
+        chmod +x package.sh && ./package.sh
+ #   - name: Start SSH via tmate
+#      uses: P3TERX/ssh2actions@main
+ #     env:
+  #     TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  #     TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}    
+
+    - name: 正在准备安装界面和插件模块中......
+      run: |
+        cd $NAME
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: 调用模板配置环境中。
+      run: |
+        cat > diy.sh << EOF
+        ${DIY_SH}
+        EOF
+        [ -e $CONFIG_FILE ] && mv $CONFIG $NAME/.config
+        chmod +x diy.sh
+        mv diy.sh $NAME/diy.sh
+        cd $NAME
+        ./diy.sh
+        make defconfig
+        
+    - name: 下载第三方预编译库.
+      run: |
+        cd $NAME
+        make -j8 download V=s
+        make -j8 download V=s
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+    - name: 正在编译中，请2-3小时后查看进度。
+      run: |
+        cd $NAME
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 || make -j1 V=s
+    - name: 制作n1镜像
+      run: | 
+         git clone https://github.com/tuanqing/mknop
+         cd mknop
+         cp ../$NAME/bin/targets/*/*/*.tar.gz openwrt
+         sudo ./gen_openwrt -d -s 880 -k latest
+         devices=("phicomm-n1" "vplus" "beikeyun" "l1pro" "s905x3")
+          cd out
+          for x in ${devices[*]}; do
+            cd $x
+            filename=$(ls | awk -F '.img' '{print $1}')
+            gzip *.img
+            cd ../
+            echo "firmware_$x=$filename" >> $GITHUB_ENV
+          done
+    - name: Upload firmware @ phicomm n1
+      uses: actions/upload-artifact@main
+      with:
+       name: ${{ env.firmware_phicomm-n1 }}
+       path: /mknop/out/phicomm-n1 
+    - name: 上传n1镜像到谷歌网盘
+      working-directory: ./mknop
+      run: |
+        cd out/phicomm-n1
+        tmp=$(find -name 20*)
+        echo $tmp
+        sudo rclone sync $tmp gd:bin/N1 
+    - name: 上传n1插件包到谷歌网盘
+      run: |
+        cd $REPO_NAME/bin/packages/*
+        sudo tar czvf N1-packages-`date +%Y年%m月%d日%H时%M分%S秒`.tar.gz * 
+        tmp=$(find -name N1-packages*)
+        echo $tmp
+        sudo rclone sync $tmp gd:bin/IPK
+        
+    - name: 上传n1打包文件到谷歌网盘
+      run: |
+        cd $REPO_NAME/bin/targets/*/*
+        rm -rf packages
+        sudo tar czvf N1-bin-`date +%Y年%m月%d日%H时%M分%S秒`.tar.gz *  
+        tmp=$(find -name N1-bin*)
+        echo $tmp
+        sudo rclone sync $tmp gd:bin/N1 
