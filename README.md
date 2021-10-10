@@ -31,4 +31,4 @@ Add some meta info of your built firmware (such as firmware architecture and ins
 
 ## License
 
-[MIT](https://github.com/pascalhack/auto-build-op/blob/main/LICENSE) © Passc
+[MIT](https://github.com/pascalhack/auto-build-op/blob/main/LICENSE) © Passcalhack
